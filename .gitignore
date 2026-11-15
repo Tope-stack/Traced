@@ -1,0 +1,16 @@
+# .NET build output
+bin/
+obj/
+*.user
+*.suo
+.vs/
+TestResults/
+BenchmarkDotNet.Artifacts/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local harness config
+.env

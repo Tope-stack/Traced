@@ -1,5 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
+  <PropertyGroup>
+    <!-- Workstation GC: phase 5 measured 1,793 MB RSS (server GC) vs 847 MB after a 300k-trace burst. See DECISIONS.md. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Traced.Storage\Traced.Storage.csproj" />
   </ItemGroup>

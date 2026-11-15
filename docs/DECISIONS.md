@@ -268,3 +268,58 @@ Open questions for Tope:
 ## Decision — GC mode (Tope, 2026-11-15)
 
 Switch `Traced.Api` to workstation GC (`<ServerGarbageCollection>false</ServerGarbageCollection>`) in phase 6, then re-measure RSS and `/traces` latency at default load and `WORKERS=200`, recording both in `docs/MEASUREMENTS.md`. Reason: phase 5 measured 1,793 MB RSS with server GC vs 847 MB with workstation GC after the 300k-trace HTTP run, with similar latency and throughput. The per-shard counter and query-allocation items stay deferred; the numbers don't justify them.
+
+## Phase 6 — plan
+
+- `src/Traced.Api/Traced.Api.csproj`: `<ServerGarbageCollection>false</ServerGarbageCollection>` (Tope's GC decision). Build/test green.
+- Harness: Docker is available, so use the real emitter (`../traced-harness` @ 8f7918c, `docker compose --profile tools run --rm emitter`), not `tools/Traced.LoadGen`. `.env` = `TARGET_URL=http://host.docker.internal:8080`, `VERIFY=true`, everything else at emitter defaults (20 workers, 5 traces/s each, 60 s, window 30, p=0.3, batch 10).
+- Server: the Release dll on the real default `http://0.0.0.0:8080`. Per-request timing comes from the ASP.NET hosting diagnostics log, enabled with an env override (no code change).
+- Sampler script (scratch): every 1 s, server RSS (`ps -o rss=`) and `curl` timing of `GET /traces?limit=1000` (dashboard-style).
+- Run 1: default load. Run 2: fresh server, `-e WORKERS=200`.
+- Record verifier output, emitter totals, RSS peak/end, `/traces` p50/p99, `POST /spans` p50/p99 in `docs/MEASUREMENTS.md`, next to the phase 5 server-GC figure.
+
+## Phase 6 — done
+
+Harness used: **the real emitter in Docker** (`benx421/traced` @ `8f7918c`, `docker compose --profile tools run --rm emitter`), not `tools/Traced.LoadGen`. Docker 29.2.1 was available, so LoadGen was not built.
+
+Built and ran:
+- `src/Traced.Api/Traced.Api.csproj`: `<ServerGarbageCollection>false</ServerGarbageCollection>` (Tope's GC decision). The built runtimeconfig shows `"System.GC.Server": false`.
+- The Release server on the real default `http://0.0.0.0:8080` (now free). Run 1 used default emitter settings; run 2 used `-e WORKERS=200`, on a fresh server process. **Both ended with the verifier's `INFO all checks passed`**: run 1 expected=found=14,039; run 2 expected=found=143,353; both missing=0, span_mismatches=0.
+- Raw numbers, verbatim verifier output and commands are in `docs/MEASUREMENTS.md` §5.
+- No other code changed.
+
+Tests: 267 (Api 187, Storage 75, Domain 5). `dotnet build -warnaserror` + `dotnet test` passed twice after the GC change.
+
+Interpretation:
+- **Default load is comfortably within capacity.**
+  - `GET /traces?limit=1000` (the dashboard's poll) is p50 2.8 / max 9.0 ms client-side with 14k traces.
+  - `POST /spans` is p50 0.19 / p99 0.87 ms server-side, with 4,299 requests all 202.
+  - RSS stayed between 83 and 104 MB.
+- **10× workers is too.** At 143k traces in the store, `/traces?limit=1000` is p50 9.6 / max 17.0 ms. POST p99 is 0.47 ms at 730 req/s; it is lower than at default load, presumably because the JIT and caches stay warmer at the higher request rate. RSS peaked at 286 MB. The phase 5 store-level numbers predicted this: 13.7 ms at 180k, limit 1000.
+- **Workstation GC holds RSS near the live data size.** 288 MB for 143k traces here, vs phase 5's 847 MB (workstation) and 1,793 MB (server GC) for a 300k burst. The workloads differ (steady 60 s vs a 2 s burst), so this is not a like-for-like GC comparison. It does show no growth beyond the store's ~1.3 KB/trace plus runtime baseline under the real emitter.
+- **Correction to PLAN §1 rate estimate (fact, not design).** The emitter averaged **234 traces/s at default** (14,039 in 60 s) and 2,389/s at `WORKERS=200`, not ~100 and ~1,000. Cause, from `emitter.go:168-174`: when a worker isn't surging, each trace has a 5% chance to start a 2–6 s surge at 4×. So a surge starts about every 20 traces (≈ 4 s at 5/s) and lasts ≈ 4 s at 20/s, for ≈ (20 + 80) / (4 + 4) ≈ 12.5 traces/s per worker. The earlier reading took "5% per trace" as rare. Requests are ~72/s at default and ~730/s at 200 workers (≈ 3.3 traces per batch). I have not edited PLAN.md; see open question 1.
+
+Deviations:
+- Per-request ASP.NET hosting-diagnostics logging was enabled through an env override, to get server-side POST latency without code changes. It adds console I/O per request, so the POST numbers are slightly pessimistic.
+- `/traces` latency is sampled at ~1 s (53 samples per run), so p99 = max. It is reported as such, not extrapolated.
+- The first sampler pass wrote literal `\t` separators (zsh `print -r`). The parser handles both forms, the sampler was fixed before run 2, and no data was lost.
+
+Cleanup:
+- The server is stopped; nothing listens on 8080 (`lsof` empty).
+- No `traced-emitter-run-*` container remains (`docker ps -a`; `--rm` removed both).
+- The `traced-emitter:latest` image (27.6 MB) and the `traced_traced` Compose network were left in place for reuse.
+- `../traced-harness/.env` is left in place (gitignored by the harness).
+- No other container was touched.
+
+Open questions for Tope:
+1. **Update PLAN §1's load figures?** Measured ≈ 234 traces/s at default and ≈ 2,400/s at 200 workers. A sustained 30-min run at `WORKERS=200` would then hold ≈ 4.3M traces, not the 180k–300k assumed in §1/§8. At ~1.3 KB/trace that is ≈ 5.6 GB of heap, and `/traces` would cost far more: phase 5 shows unfiltered query time growing roughly linearly, 20 ms at 300k. The default `DURATION` is 60 s, so neither run here gets near that. A 30-minute 10× run was not part of this phase. If it matters for the write-up, it is the run that would expose both the memory ceiling and the O(n) `view.Count` cost (the per-shard counter deferred in phase 5).
+2. Leave the hosting-diagnostics log off by default (it is: it was only an env override for these runs)?
+
+### Worth understanding
+- `../traced-harness/emitter/internal/verifier/verifier.go:42` and `:59` — the verifier counts as "expected" every trace whose batch was *acknowledged* (`SentAt` is set after a 2xx at `emitter.go:208`) within the window. It passes on `total >= expected`. So under-counting fails, over-counting doesn't, and a 202 for a span we then drop silently (stale) would show up as "missing". That is why ingest must store everything in the window before returning 202.
+- `../traced-harness/emitter/internal/emitter/emitter.go:172-173` — the surge trigger is evaluated once per generated trace while not surging, so "5%" compounds into surges being the norm. Per-event probabilities in a loop need converting to rates before estimating load. This one changed the load estimate by 2.3×.
+- `src/Traced.Api/Traced.Api.csproj:5` — `ServerGarbageCollection` is an MSBuild property written into `Traced.Api.runtimeconfig.json` (`System.GC.Server`), not code. It can be overridden at launch with `DOTNET_gcServer`, which is how phase 5 compared both modes without rebuilding.
+
+## Correction — PLAN.md §1 load estimate (after phase 6)
+
+The pre-phase-0 correction to §1 put default load at ~100 traces/s (20 workers × 5/s). That ignored surge frequency: a non-surging worker has a 5% chance per trace of starting a 2–6 s surge at 4x, so it surges about every 20 traces and averages ~12.5 traces/s, not 5. Phase 6 measured 234 traces/s at default and 2,389/s at `WORKERS=200`, matching that model. §1 now carries the measured rates and the 30-minute projections (~420k traces at default, ~4.3M at 10x). Phase 5 benchmarks stop at 300k, so a sustained 10x window is unmeasured; this stays an open question for Tope.

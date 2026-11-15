@@ -1,0 +1,15 @@
+**/bin
+**/obj
+**/.DS_Store
+**/TestResults
+**/BenchmarkDotNet.Artifacts
+.git
+.github
+.claude
+.vs
+.idea
+.vscode
+benchmarks
+docs
+spec
+tests

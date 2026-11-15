@@ -101,6 +101,15 @@ dotnet run -c Release --project benchmarks/Traced.Benchmarks -- http http://loca
 
 The full suite (`--filter '*'`) takes several minutes. The recorded results and the commands that produced them are in [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md).
 
+## Docker and deployment
+
+```bash
+docker build -f src/Traced.Api/Dockerfile -t traced-api .
+docker run --rm -p 8080:8080 traced-api
+```
+
+[`render.yaml`](render.yaml) deploys the same image to Render's free tier as a single web service; see [`docs/deploy/render.md`](docs/deploy/render.md). [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds, runs every test, and smoke-tests the image on each pull request and push to `main`, and Render deploys `main` only after those checks pass.
+
 ## Repository layout
 
 ```
@@ -113,11 +122,15 @@ tests/Traced.Domain.Tests/   time and window helpers
 tests/Traced.Storage.Tests/  assembly, query, window, eviction, concurrency, stress
 tests/Traced.Api.Tests/      validators, mapping, WebApplicationFactory endpoint/CORS/error tests
 benchmarks/Traced.Benchmarks BenchmarkDotNet suite, memory probe, HTTP load loop
-docs/                        PLAN.md, DECISIONS.md, MEASUREMENTS.md, PR_DESCRIPTION.md
+docs/                        OVERVIEW.md (and .pdf), PLAN.md, DECISIONS.md, MEASUREMENTS.md, PR_DESCRIPTION.md,
+                             deploy/render.md
+render.yaml                  Render Blueprint (one free Docker web service)
+.github/workflows/ci.yml     build, test and Docker smoke test
 ```
 
 ## Further reading
 
+- [`docs/OVERVIEW.md`](docs/OVERVIEW.md) ([PDF](docs/OVERVIEW.pdf)): what Traced is and how it works, for engineers new to the project.
 - [`docs/PLAN.md`](docs/PLAN.md): design and phase plan.
 - [`docs/DECISIONS.md`](docs/DECISIONS.md): every decision and deviation, by phase, plus the open questions and known risks.
 - [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md): raw benchmark, stress and end-to-end numbers, with commands.

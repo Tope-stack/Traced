@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      # Warnings are errors (Directory.Build.props); -warnaserror also covers the benchmark project.
+      - name: Build
+        run: dotnet build --no-restore --configuration Release -warnaserror
+
+      # Includes the Category=Stress test (~15 s).
+      - name: Test
+        run: dotnet test --no-build --configuration Release --logger "trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The same image Render builds from render.yaml; not pushed anywhere.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/Traced.Api/Dockerfile
+          push: false
+          load: true
+          tags: traced-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the container
+        run: |
+          set -euo pipefail
+          docker run -d --name traced -p 8080:8080 traced-api:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health; then echo; break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:8080/health | grep -q '"status":"ok"'
+          curl -sf "http://localhost:8080/traces" | grep -q '"total":0'
+
+      - name: Container logs
+        if: always()
+        run: docker logs traced || true

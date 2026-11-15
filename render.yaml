@@ -1,0 +1,18 @@
+# Render Blueprint: Traced on Render's free tier (docs/deploy/render.md).
+# One web service, no database: all traces live in memory, so a restart, redeploy or free-tier sleep empties the store.
+services:
+  - type: web
+    name: traced
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./src/Traced.Api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    # Deploy a push to main only after its GitHub checks (.github/workflows/ci.yml) pass.
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PORT
+        value: "8080" # the container listens on 8080
+      - key: WINDOW_MINUTES
+        value: "30" # rolling window; the free tier's 512 MB fits a 60 s emitter run easily, not 30 min of sustained load

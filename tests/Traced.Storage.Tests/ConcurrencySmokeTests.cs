@@ -62,3 +62,67 @@ public sealed class ConcurrencySmokeTests
         }
     }
 }
+
+public sealed class EvictionConcurrencySmokeTests
+{
+    [Fact]
+    public async Task Eviction_alongside_ingest_and_query_does_not_throw_or_lose_in_window_traces()
+    {
+        const int writers = 4;
+        const int tracesPerWriter = 500;
+        var (_, store) = NewStore(shardCount: 8);
+        var keptCutoff = NowNs - (500 * Ms);   // eviction cutoff: traces at or after this are in-window
+        var kept = new System.Collections.Concurrent.ConcurrentDictionary<Guid, int>();
+        using var stop = new CancellationTokenSource();
+
+        var evictor = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                store.EvictOlderThan(keptCutoff);
+            }
+        });
+        var reader = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                var result = store.Query(new TraceQuery(Limit: 100, AfterNs: keptCutoff));
+                foreach (var summary in result.Traces)
+                {
+                    Assert.True(store.TryGetTrace(summary.TraceId, out _));
+                }
+            }
+        });
+
+        var writerTasks = Enumerable.Range(0, writers).Select(w => Task.Run(() =>
+        {
+            var random = new Random(100 + w);
+            for (var t = 0; t < tracesPerWriter; t++)
+            {
+                // Half the traces start before the eviction cutoff, half at or after it.
+                var start = keptCutoff + ((random.Next(0, 2) == 0 ? -1 : 1) * random.Next(1, 400) * Ms);
+                var root = Root(Guid.NewGuid(), startNs: start);
+                var spans = new[] { root, Child(root), Child(root) }.OrderBy(_ => random.Next()).ToArray();
+                if (start >= keptCutoff)
+                {
+                    kept[root.TraceId] = spans.Length;
+                }
+
+                store.Ingest(spans[..1]);
+                store.Ingest(spans[1..]);
+            }
+        })).ToArray();
+
+        await Task.WhenAll(writerTasks);
+        await stop.CancelAsync();
+        await Task.WhenAll(evictor, reader);
+        store.EvictOlderThan(keptCutoff);
+
+        var all = store.Query(new TraceQuery(Limit: TraceQuery.MaxLimit));
+        Assert.Equal(kept.Count, all.Total);
+        foreach (var (traceId, count) in kept)
+        {
+            Assert.Equal(count, store.Get(traceId).Count);
+        }
+    }
+}

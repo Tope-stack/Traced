@@ -227,4 +227,12 @@ public sealed class IngestAssemblyTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => NewStore(shardCount));
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Window_minutes_must_be_positive(int windowMinutes)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => NewStore(windowMinutes: windowMinutes));
+    }
 }

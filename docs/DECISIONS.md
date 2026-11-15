@@ -131,3 +131,46 @@ Open questions:
 - `src/Traced.Storage/ShardedTraceStore.cs:49-67` — grouping a batch into per-shard buckets before locking means a 13-span batch takes ≤13 (usually ~3) lock acquisitions, each once. Locking per span would let another writer interleave within a trace's spans and multiply the lock traffic.
 - `src/Traced.Storage/ShardedTraceStore.cs:97-108` — `GetViewBetween` gives a live range over the tree. `Reverse()` walks it from the newest end, so taking `limit` is O(log n + limit). `view.Count`, however, walks the whole range (O(matches)), which is why `total` is the likely hot spot. The `TraceSummary` is built here, inside the lock, because the `TraceEntry` it reads keeps mutating after the lock is released.
 - `src/Traced.Storage/ShardedTraceStore.cs:197` and `:209` — `SortedSet` keys must never change while stored. When a trace's `FirstSeenNs` drops (an earlier child arrives) or it gains a root, the old `(FirstSeenNs, TraceId)` key is removed *using the value captured before the mutation* and re-added. Otherwise the tree would hold a key it can no longer find.
+
+## Phase 3 — plan
+
+Files:
+- `src/Traced.Domain/ITraceStore.cs`: restore `int EvictOlderThan(long cutoffNs)`.
+- `src/Traced.Storage/ShardedTraceStore.cs`: implement it per §3.5, one shard lock at a time, popping `Rooted.Min` / `Orphans.Min` while below the cutoff and removing from `Traces`.
+- `src/Traced.Storage/EvictionService.cs`: `BackgroundService`. `PeriodicTimer(EvictionInterval, TimeProvider)`; each tick computes `cutoff = now - window` and calls the store. Per-tick catch + log; cancellation exits cleanly.
+- `src/Traced.Storage/Traced.Storage.csproj`: `<FrameworkReference Include="Microsoft.AspNetCore.App" />` for `BackgroundService`/`ILogger` (shared framework, not a NuGet package; see done entry).
+- `src/Traced.Api/Program.cs`: register `TimeProvider.System`, `WindowOptions` (from `WINDOW_MINUTES`), `ShardedTraceStore` as singleton `ITraceStore`, and the hosted `EvictionService`.
+
+Tests (first):
+- `tests/Traced.Storage.Tests/EvictionTests.cs`: cutoff boundary, orphan eviction, re-keyed orphan, rooted-from-orphan not evicted via a stale orphan key, late children after eviction, in-window traces untouched, eviction count, idempotence.
+- `tests/Traced.Storage.Tests/EvictionServiceTests.cs`: ticks on `Advance` with the right cutoff, no tick before the interval, a throwing tick is logged and the next tick runs, stop on cancellation.
+- `tests/Traced.Storage.Tests/ConcurrencySmokeTests.cs`: add eviction running alongside ingest and query.
+- `tests/Traced.Api.Tests/CompositionTests.cs`: DI resolves a singleton `ITraceStore`, the hosted service is registered, `WINDOW_MINUTES` is honoured.
+
+## Phase 3 — done
+
+Built:
+- `ITraceStore.EvictOlderThan(long cutoffNs)` is back. `ShardedTraceStore` implements it one shard lock at a time, popping `Rooted.Min` while `StartNs < cutoff` and `Orphans.Min` while `FirstSeenNs < cutoff`, removing each from `Traces`. It returns the count.
+- `EvictionService : BackgroundService`: `PeriodicTimer(EvictionInterval, TimeProvider)`. Each tick does `cutoff = now - window` → `EvictOlderThan`. Per-tick catch-all logs at Error (source-generated `LoggerMessage`). Cancellation ends the loop and `ExecuteTask` completes successfully.
+- `Program.cs` registers `TimeProvider.System`, `WindowOptions` (from `WINDOW_MINUTES`, default 30), `ShardedTraceStore` as singleton `ITraceStore`, and the hosted service. Still no /spans or /traces endpoints.
+- `ShardedTraceStore` now also rejects `WindowMinutes <= 0` at construction, so a bad `WINDOW_MINUTES` fails at startup.
+
+Tests: 23 new (Storage 74 with 19 new, Api 125 with 4 new, Domain 5; total 204). They were written first and confirmed red. The storage suite ran 10× in a row green. A boot smoke test on :18080 with `WINDOW_MINUTES=5` gave `/health` 200 and no hosted-service errors; the process was stopped afterwards.
+
+Deviations:
+- **`FrameworkReference Microsoft.AspNetCore.App` in Traced.Storage.** PLAN puts `EvictionService` (a `BackgroundService` with `ILogger`) in Storage, which needs the hosting and logging abstractions. The NuGet route (`Microsoft.Extensions.Hosting.Abstractions`) isn't on the allowed list. The shared framework is already on every machine that runs the Api, so it adds no package. Domain stays free of it. Alternative if Tope prefers: move `EvictionService` to `Traced.Api` (Storage would then be pure) or approve the NuGet package.
+- **The timer is created in `StartAsync`, not `ExecuteAsync`.** Since .NET 10, `BackgroundService.StartAsync` runs `ExecuteAsync` on the thread pool. A timer created there can come into existence after a `FakeTimeProvider.Advance` (or, in production, a little later than start). That made the first test run fail: 4 service tests timed out waiting for ticks. `PeriodicTimer` latches one tick that fires before `WaitForNextTickAsync` is awaited, so nothing is lost.
+- **Late children of an evicted trace start a fresh orphan.** This follows directly from §3: after eviction the trace_id has no entry, so a child ≥ cutoff creates a new orphan entry (`FirstSeenNs` = its start) and is evicted on the orphan path later. It never resurrects the trace, because the root is < cutoff and would be dropped on ingest. Pinned by `Late_child_of_an_evicted_trace_starts_a_fresh_orphan_and_does_not_resurrect_it`.
+- A trace_id evicted and later reused by a fresh trace is treated as a new trace.
+
+Open questions:
+- Each shard's eviction holds that shard's lock for the whole pop loop. At default load that is ~3 traces/shard/tick. After a long pause (e.g. a laptop sleep) one tick could pop a large backlog under one lock. Phase 5 can measure; a per-tick cap is the simple fix if needed.
+
+### Worth understanding
+- `src/Traced.Storage/ShardedTraceStore.cs:194` and `:202` — both indexes are ordered oldest-first, so eviction is "pop `Min` until it's in the window". Each pop is O(log n) and the loop touches only what it removes, never the live traces. That is why the orphan index exists as a separate `SortedSet` instead of being found by scanning `Traces`.
+- `src/Traced.Storage/EvictionService.cs:25` — `new PeriodicTimer(interval, timeProvider)` puts timer firing under the injected clock, so `FakeTimeProvider.Advance(1s)` fires a tick deterministically, with no real sleeping. Creating it before `base.StartAsync` matters because of .NET 10's thread-pool `ExecuteAsync` (see deviations).
+- `src/Traced.Storage/EvictionService.cs:63` — the catch is inside the loop body, not around the loop. An exception ends only that tick. If the try/catch wrapped the `while`, one bad tick would end eviction for good, and memory would then grow without any error reaching a caller.
+
+## Decision — Storage framework reference (Tope, 2026-11-15)
+
+Keep `<FrameworkReference Include="Microsoft.AspNetCore.App" />` in `Traced.Storage` so `EvictionService` can use `BackgroundService` and `ILogger`. Chosen over adding `Microsoft.Extensions.Hosting.Abstractions` (not on the allowed package list) and over moving `EvictionService` into Traced.Api (would break the PLAN §2 layout). Storage code should still use only `Microsoft.Extensions.*` hosting/logging types from it, not ASP.NET HTTP types. Domain stays framework-free.

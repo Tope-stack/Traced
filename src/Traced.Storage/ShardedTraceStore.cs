@@ -28,6 +28,11 @@ public sealed class ShardedTraceStore : ITraceStore
             throw new ArgumentOutOfRangeException(nameof(options), options.ShardCount, "ShardCount must be a positive power of two.");
         }
 
+        if (options.WindowMinutes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.WindowMinutes, "WindowMinutes must be positive.");
+        }
+
         _time = time;
         _options = options;
         _shards = new Shard[options.ShardCount];
@@ -143,6 +148,21 @@ public sealed class ShardedTraceStore : ITraceStore
         return true;
     }
 
+    public int EvictOlderThan(long cutoffNs)
+    {
+        var removed = 0;
+        foreach (var shard in _shards)
+        {
+            // One shard at a time: ingest and queries on other shards proceed meanwhile.
+            lock (shard.Gate)
+            {
+                removed += shard.EvictOlderThan(cutoffNs);
+            }
+        }
+
+        return removed;
+    }
+
     private long CurrentCutoff() => _options.CutoffNs(_time.GetUtcNowUnixNanoseconds());
 
     private int ShardIndex(Guid traceId) => traceId.GetHashCode() & _shardMask;
@@ -166,6 +186,29 @@ public sealed class ShardedTraceStore : ITraceStore
         public readonly Dictionary<Guid, TraceEntry> Traces = [];
         public readonly SortedSet<(long StartNs, Guid TraceId)> Rooted = [];
         public readonly SortedSet<(long FirstSeenNs, Guid TraceId)> Orphans = [];
+
+        /// <summary>Caller holds <see cref="Gate"/>. Pops from the front of each index; both are ordered oldest first.</summary>
+        public int EvictOlderThan(long cutoffNs)
+        {
+            var removed = 0;
+            while (Rooted.Count > 0 && Rooted.Min.StartNs < cutoffNs)
+            {
+                var oldest = Rooted.Min;
+                Rooted.Remove(oldest);
+                Traces.Remove(oldest.TraceId);
+                removed++;
+            }
+
+            while (Orphans.Count > 0 && Orphans.Min.FirstSeenNs < cutoffNs)
+            {
+                var oldest = Orphans.Min;
+                Orphans.Remove(oldest);
+                Traces.Remove(oldest.TraceId);
+                removed++;
+            }
+
+            return removed;
+        }
 
         /// <summary>Caller holds <see cref="Gate"/>.</summary>
         public void Apply(Span span)

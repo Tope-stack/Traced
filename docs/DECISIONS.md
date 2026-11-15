@@ -1,6 +1,64 @@
 # Decisions log
 
-Agent-maintained. Newest entries at the bottom.
+Agent-maintained. Newest entries at the bottom. The two sections below are an index and a consolidated list. The history entries after them are unchanged.
+
+## Summary of decisions
+
+One line per decision, by phase. Each one is detailed in the named section.
+
+| Phase | Decision | Section |
+|---|---|---|
+| Pre-0 | PLAN §1 facts corrected from the emitter source: shuffle is per trace, `BATCH_SIZE` counts spans, the rate is per trace generation | Pre-phase 0 — PLAN.md corrections |
+| 0 | `Traced.slnx` (SDK 10 default) instead of `.sln` | Phase 0 — done |
+| 0 | Bind `http://0.0.0.0:8080` only when no `urls` config is set, so `ASPNETCORE_URLS` overrides; template `launchSettings.json` removed | Phase 0 — done |
+| 0 | Template `coverlet.collector` removed (not on the allowed list); `Mvc.Testing` pinned to 10.0.11 | Phase 0 — done |
+| 1 | Empty `service`/`operation` accepted: the spec has no `minLength`, PLAN §5 said non-empty | Phase 1 — done |
+| 1 | UUIDs must be canonical 8-4-4-4-12 (`Guid.TryParseExact "D"`), either case; version bits not checked | Phase 1 — done |
+| 1 | Inbound mapping lives in the validator (parse once); `Mapping/` is outbound only | Phase 1 — done |
+| 1 | Malformed JSON is the single `JsonException` → `Result` conversion; the message carries `ex.Path` only | Phase 1 — done |
+| 1 | Error message shape `invalid request body: spans[i]: ...` / `invalid query parameter: ...`; first error wins | Phase 1 — done |
+| 1 | Lengths counted in UTF-16 code units; empty/absent tags are not distinguished on output; `parent_span_id: null` means root | Phase 1 — done |
+| 1→4 | Repeated `limit`/`after`/`before` → 400 naming the key (Tope) | Decision — repeated query keys |
+| 2 | `EvictOlderThan` kept out of the interface until phase 3 (no throwing stub) | Phase 2 — done |
+| 2 | Cross-shard merge = one sort of ≤ shards × limit candidates | Phase 2 — done |
+| 2 | Tie-break `(StartNs desc, TraceId desc)` via `Guid.CompareTo`; detail ties by `SpanId` | Phase 2 — done |
+| 2 | Dedupe by span_id per trace, first copy wins; first parentless span is the root | Phase 2 — done (PLAN §3.2) |
+| 2 | Stale child of a fresh root is dropped on ingest | Phase 2 — done |
+| 3 | `FrameworkReference Microsoft.AspNetCore.App` in Traced.Storage for `BackgroundService`/`ILogger` (Tope) | Phase 3 — done; Decision — Storage framework reference |
+| 3 | `PeriodicTimer` created in `StartAsync`, because .NET 10 runs `ExecuteAsync` on the thread pool | Phase 3 — done |
+| 3 | Late children of an evicted trace start a fresh orphan; the trace is never resurrected | Phase 3 — done |
+| 3 | `WindowMinutes <= 0` rejected at startup | Phase 3 — done |
+| 4 | Body read by hand (not framework-bound), so every bad body gets the `{"error"}` 400 | Phase 4 — done |
+| 4 | Non-JSON or missing `Content-Type` → 400 | Phase 4 — done |
+| 4 | Body > 32 MiB → 413 `{"error"}`; unhandled exception → bare 500 `{"error"}`; never ProblemDetails | Phase 4 — done |
+| 4 | Unknown query parameters ignored; unmatched routes keep the framework's empty 404/405 | Phase 4 — done |
+| 4 | `end_time` message reworded to avoid STJ's `\u003e` escaping | Phase 4 — done |
+| 5 | BenchmarkDotNet in a separate `benchmarks/` project, not run by `dotnet test` | Phase 5 — done |
+| 5 | No optimisation: `/traces` at 300k (20 ms) judged fine at a 3 s poll | Phase 5 — done |
+| 5→6 | Workstation GC for Traced.Api (Tope) | Decision — GC mode; Phase 6 — done |
+| 6 | Real Docker emitter used (not LoadGen); per-request timing via an env-only logging override | Phase 6 — done |
+| 6 | PLAN §1 load row corrected to the measured rates (~234 traces/s default, ~2,390/s at 200 workers) | Correction — PLAN.md §1 load estimate |
+| 7 | Sustained 30-min `WORKERS=200` run skipped by choice (Tope) | Decision — sustained 10x run skipped |
+| 7 | Per-request logging stays off by default (Tope) | Decision — per-request logging |
+
+## Open questions and known risks
+
+Consolidated from the phase entries. None of these blocks the current results. Each was either deferred by choice or is a property of the design.
+
+| # | Item | Status / evidence | Where |
+|---|---|---|---|
+| 1 | **Sustained 10x window is unmeasured.** ~4.3M traces in a 30-min window at `WORKERS=200`. At ~1.3 KB/trace that is ≈ 5.6 GB of heap; unfiltered `/traces` was 20 ms at 300k and grows with the window. | Known risk, skipped by choice | Decision — sustained 10x run skipped; Correction — PLAN.md §1; MEASUREMENTS §2.2, §3 |
+| 2 | **`SortedSet` view `Count` is O(matches).** It is ~12 ms of the 20 ms unfiltered query at 300k. A per-shard rooted counter (PLAN §3.3) would remove it for unfiltered queries. | Deferred; numbers don't justify it at a 3 s poll | Phase 5 — done (Q2); Decision — GC mode |
+| 3 | **Query allocations.** limit=1000 allocates 2.7 MB per call (32 × 1,000 candidates, then sort); a k-way merge would bring it to ~1,000. | Deferred | Phase 5 — done (Q3) |
+| 4 | **No persistence.** A restart loses the window. | By design (PLAN §8) | PLAN §8 |
+| 5 | **First root wins.** A second parentless span for the same trace is stored but ignored as root. | By design | PLAN §3.2, §8; Phase 2 — done |
+| 6 | **Future timestamps accepted.** Spans dated ahead of now are stored and live until they age out. | By design | PLAN §8 |
+| 7 | **Stale child of a fresh root is dropped.** `span_count` would then be lower. The emitter can't produce this (children never start before the root). | By design | Phase 2 — done |
+| 8 | **Eviction holds each shard's lock for its whole pop loop.** A 300k backlog was ≈ 1 ms per shard (32.8 ms total); a steady tick is 25–230 µs. | Measured, no cap needed | Phase 5 — done; MEASUREMENTS §2.4 |
+| 9 | **Server GC vs workstation GC.** Workstation was chosen on RSS; the steady 10x run reached 288 MB. There was no like-for-like GC comparison under the real emitter. | Decided; comparison not repeated | Decision — GC mode; Phase 6 — done |
+| 10 | **Body > 32 MiB → 413.** The spec lists only 400; the framework logs each 413 at `fail`. | Judgment call | Phase 4 — done |
+| 11 | **Lengths are UTF-16 code units**; dedupe scope is per trace; empty vs absent tags are not distinguished on output. | Judgment calls (spec silent) | Phase 1 — done; Phase 2 — done |
+| 12 | **Measurement caveats:** HTTP POST latency in phase 6 includes per-request logging overhead; `/traces` p99 = max (53 samples); `GC.GetTotalMemory` and `HeapSizeBytes` disagree. | Recorded with the numbers | MEASUREMENTS §3, §5 |
 
 ## Pre-phase 0 — PLAN.md corrections from emitter source
 
@@ -323,3 +381,50 @@ Open questions for Tope:
 ## Correction — PLAN.md §1 load estimate (after phase 6)
 
 The pre-phase-0 correction to §1 put default load at ~100 traces/s (20 workers × 5/s). That ignored surge frequency: a non-surging worker has a 5% chance per trace of starting a 2–6 s surge at 4x, so it surges about every 20 traces and averages ~12.5 traces/s, not 5. Phase 6 measured 234 traces/s at default and 2,389/s at `WORKERS=200`, matching that model. §1 now carries the measured rates and the 30-minute projections (~420k traces at default, ~4.3M at 10x). Phase 5 benchmarks stop at 300k, so a sustained 10x window is unmeasured; this stays an open question for Tope.
+
+## Decision — sustained 10x run skipped (Tope, 2026-11-15)
+
+The 30-minute `WORKERS=200` run is **not** done. A sustained 10x window (~4.3M traces, projected from the phase 6 rates in PLAN §1) stays unmeasured by choice. This is a known risk, not a pending task. It is listed under "Open questions and known risks".
+
+## Decision — per-request logging (Tope, 2026-11-15)
+
+ASP.NET hosting-diagnostics request logging stays **off by default** (`appsettings.json` keeps `Microsoft.AspNetCore` at `Warning`). Phase 6 enabled it only through an env override for its measurements; no code or config change.
+
+## Phase 7 — plan
+
+- `README.md` (new, repo root): what Traced is, prerequisites, build/test (incl. stress-only and skip-stress filters), running the server (8080, `ASPNETCORE_URLS`, `WINDOW_MINUTES`), one curl per endpoint, the real emitter and dashboard from `../traced-harness` (checked against its README/compose), benchmarks, layout, doc pointers.
+- `docs/DECISIONS.md`: add `## Summary of decisions` and `## Open questions and known risks` near the top. History entries stay as written. Add the two Tope decisions above.
+- `docs/MEASUREMENTS.md`: add an index at the top; check that every section has command, environment and raw numbers.
+- `docs/PR_DESCRIPTION.md` (new): draft whole-project PR description, facts only.
+- Verify every README command (except the emitter, which is checked against the harness files only, and the full benchmark suite, where only the Release build and `--list flat` are run). No TRADEOFFS.md.
+
+## Phase 7 — done
+
+Built:
+- `README.md` (repo root): what Traced is, prerequisites, build/test (with stress-only and skip-stress filters), running the server (8080, `ASPNETCORE_URLS`, `WINDOW_MINUTES`), the endpoint table with curl examples, the real emitter and dashboard from `../traced-harness`, benchmarks, layout, doc pointers. It contains no design-tradeoff prose.
+- `docs/DECISIONS.md`: `## Summary of decisions` (one line per decision, by phase, with its section) and `## Open questions and known risks` (12 items) at the top, plus Tope's two phase 7 decisions (sustained 10x run skipped; per-request logging off by default). The history entries are unchanged.
+- `docs/MEASUREMENTS.md`: an index at the top (section, phase, build, command) and a note that the sustained 10x window was not measured. The GC row in Environment now says which sections ran server vs workstation GC. All numbers are unchanged.
+- `docs/PR_DESCRIPTION.md`: a draft whole-project PR description (what was built, verification with headline numbers, suggested reading order, where the open questions live).
+- No code changed. No TRADEOFFS.md and no tradeoff draft.
+
+Verification of the README commands:
+- `dotnet build -warnaserror`: 0 warnings, 0 errors.
+- `dotnet test tests/Traced.Storage.Tests --filter Category=Stress`: 1 test passed (14 s).
+- `dotnet test --filter "Category!=Stress"`: 266 tests passed (5 + 74 + 187).
+- `dotnet run -c Release --project src/Traced.Api` listened on `*:8080`. The README's curl block, run verbatim in bash, gave POST 202 `{"status":"ok"}`, `/traces?limit=20` with `span_count` 2 and `duration_ms` 150, `/traces/{id}` with both spans ascending and the root without `parent_span_id`, and `/health` `{"status":"ok"}`. The `$((...))` arithmetic was also checked under zsh.
+- `ASPNETCORE_URLS=http://0.0.0.0:18080 dotnet run ...`: `/health` 200 on 18080, nothing on 8080.
+- `WINDOW_MINUTES=5 dotnet run ...`: a root 6 minutes old was accepted with 202 and not listed (`total` 0).
+- `dotnet build benchmarks/Traced.Benchmarks -c Release -warnaserror`: clean. `-- --list flat` printed all 8 benchmarks. The full suite was not rerun.
+- Emitter and dashboard were not rerun. I checked the README against the harness files: compose service `emitter`, profile `tools`, `env_file: .env`, nginx `8081:80`; the harness README's Connect flow and Linux `ip route` advice; Makefile `up`/`emit`/`down`. The harness `.env.example` sets `VERIFY=false`, which the README calls out.
+- Every server was stopped after its check; nothing was left on 8080 or 18080.
+
+Tests: 267 (Domain 5, Api 187, Storage 75). `dotnet build -warnaserror` + `dotnet test` passed twice.
+
+Deviations: none from PLAN §6 row 7.
+
+Open questions: none new. Everything still open is in "Open questions and known risks" at the top of this file.
+
+### Worth understanding
+- `tests/Traced.Storage.Tests/StressTests.cs:11` — `[Trait("Category", "Stress")]` is what `dotnet test --filter Category=Stress` and `Category!=Stress` select on. xUnit traits become VSTest properties, so the filter syntax is the test platform's, not xUnit's.
+- `benchmarks/Traced.Benchmarks/Program.cs:21` — `BenchmarkSwitcher` makes the exe accept BenchmarkDotNet's own CLI (`--list flat`, `--filter`, `--artifacts`). The `memory` and `http` modes are matched before it, so one project serves both BDN and the timed probes.
+- `../traced-harness/.env.example:23` — `VERIFY=false` in the template overrides the emitter's built-in default of `true`, because any non-empty env value wins (`envBool` in `emitter/cmd/emitter/main.go`). Copying the template as-is silently disables the verifier, which is why the README spells out the two lines to set.

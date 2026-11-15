@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Traced.Api/Traced.Api.csproj" />
+    <Project Path="src/Traced.Domain/Traced.Domain.csproj" />
+    <Project Path="src/Traced.Storage/Traced.Storage.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Traced.Api.Tests/Traced.Api.Tests.csproj" />
+    <Project Path="tests/Traced.Domain.Tests/Traced.Domain.Tests.csproj" />
+    <Project Path="tests/Traced.Storage.Tests/Traced.Storage.Tests.csproj" />
+  </Folder>
+</Solution>

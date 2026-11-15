@@ -174,3 +174,52 @@ Open questions:
 ## Decision — Storage framework reference (Tope, 2026-11-15)
 
 Keep `<FrameworkReference Include="Microsoft.AspNetCore.App" />` in `Traced.Storage` so `EvictionService` can use `BackgroundService` and `ILogger`. Chosen over adding `Microsoft.Extensions.Hosting.Abstractions` (not on the allowed package list) and over moving `EvictionService` into Traced.Api (would break the PLAN §2 layout). Storage code should still use only `Microsoft.Extensions.*` hosting/logging types from it, not ASP.NET HTTP types. Domain stays framework-free.
+
+## Phase 4 — plan
+
+Files:
+- `src/Traced.Api/Endpoints/SpanEndpoints.cs`: `MapSpanEndpoints()`, POST /spans. Checks the JSON content type, buffers the body, `IngestRequestValidator.Parse` → `ITraceStore.Ingest` → 202 `{"status":"ok"}` / 400 `{"error"}`.
+- `src/Traced.Api/Endpoints/TraceEndpoints.cs`: `MapTraceEndpoints()`, GET /traces (`TraceQueryParser.Parse(IQueryCollection)`) and GET /traces/{trace_id} (`TraceIdParser`), 200/400/404.
+- `src/Traced.Api/Endpoints/ErrorHandling.cs`: `UseJsonErrors()`. Any unhandled exception or `BadHttpRequestException` becomes `{"error"}` with its status (never ProblemDetails or the developer page).
+- `src/Traced.Api/Validation/TraceQueryParser.cs`: add a `Parse(IQueryCollection)` overload; a repeated `limit`/`after`/`before` → 400 naming the key (Tope's decision).
+- `src/Traced.Api/Program.cs`: CORS default policy (any origin, GET/POST, Content-Type), Kestrel `MaxRequestBodySize` 32 MB, `UseJsonErrors`, `UseCors`, map the endpoint groups.
+- `tests/Traced.Api.Tests/Traced.Api.Tests.csproj`: add `Microsoft.Extensions.TimeProvider.Testing`.
+
+Tests (first), in `tests/Traced.Api.Tests/Endpoints/`: `ApiFactory.cs` (a fresh app per test with `FakeTimeProvider` swapped in), `SpanEndpointTests.cs`, `TraceEndpointTests.cs`, `RoundTripTests.cs`, `CorsTests.cs`, `ErrorHandlingTests.cs`; plus repeated-key cases in `Validation/TraceQueryParserTests.cs`.
+
+## Phase 4 — done
+
+Built:
+- `Endpoints/SpanEndpoints.cs`: POST /spans. JSON content-type check → buffer body → `IngestRequestValidator.Parse` → `ITraceStore.Ingest` → 202 `{"status":"ok"}`. Invalid → 400 `{"error"}`.
+- `Endpoints/TraceEndpoints.cs`: GET /traces (`TraceQueryParser.Parse(IQueryCollection)`) and GET /traces/{trace_id} (`TraceIdParser`; 404 `{"error":"trace not found"}` for unknown, orphaned or out-of-window).
+- `Endpoints/Errors.cs`: the `{"error"}` result helpers and `UseJsonErrors()`. Any unhandled exception → 500 `{"error":"internal server error"}` with no details. `BadHttpRequestException` keeps its status (413 → `{"error":"request body too large"}`). No ProblemDetails and no developer exception page, even in Development.
+- `TraceQueryParser.Parse(IQueryCollection)`: a repeated `limit`/`after`/`before` → 400 `invalid query parameter: <key> must not be repeated` (Tope's decision). Matching is case-insensitive (ASP.NET's query collection), so `limit=1&LIMIT=2` is also "repeated".
+- `Program.cs` (composition only): Kestrel `MaxRequestBodySize` = 32 MiB (33,554,432 bytes; `SpanEndpoints.MaxRequestBodyBytes`); CORS default policy `AllowAnyOrigin`, `GET, POST`, `Content-Type`; `UseJsonErrors` → `UseCors` → map Health/Span/Trace groups.
+
+Tests: 62 new Api tests (Api 187, Storage 74, Domain 5; total 266). They were written first and confirmed red. First green run: 3 failures, 2 of them wrong test expectations and 1 a real defect:
+- Defect: STJ's default encoder escapes `>` as `>`, so `end_time must be >= start_time` reached clients as `end_time must be >= start_time`. I reworded it to `end_time must not be before start_time` (unit test updated to match) rather than switch to `UnsafeRelaxedJsonEscaping`.
+- The truncated-JSON test expected `malformed JSON`. The actual message is `malformed JSON at $.spans[0]`, which is more useful, so I fixed the expectation.
+- CORS: ASP.NET still sends `Access-Control-Allow-Origin: *` on a preflight for a disallowed method. The browser blocks because the method isn't in `Allow-Methods`. The test now asserts that instead.
+
+Real run (:18080; :8080 is still held by the unrelated `innpay_api` container, untouched):
+- Verbatim spec example (2024 timestamps): 202 but not stored (stale).
+- Same ids shifted to now: 202. `/traces` returned the example's summary with `span_count` 2 and `duration_ms` 150. `/traces/{id}` returned both spans ascending, with the root omitting `parent_span_id`.
+- 400 for a bad UUID and for a repeated `limit`; 404 for an unknown trace.
+- Preflight: 204 with `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET,POST` and `Access-Control-Allow-Headers: Content-Type`.
+- A 33 MiB body got 413 `{"error":"request body too large"}`.
+- The server was stopped afterwards; nothing was left listening.
+
+Judgment calls (spec silent):
+- **Content-Type must be JSON** (`HasJsonContentType`: `application/json` or `+json`, any charset); otherwise 400. The spec defines only an `application/json` request body and only 400 as an error, and the emitter sends `application/json`. A missing Content-Type is also 400 (curl's `-d` default `x-www-form-urlencoded` would otherwise be parsed as JSON by accident).
+- **Body over 32 MiB → 413, not 400.** Kestrel enforces the limit while the body is read; 413 is the accurate status and the body is still `{"error"}`. The exception-handler middleware logs it at `fail`. That is noisy but harmless, and it never happens with the emitter (≈5 KB batches).
+- **Unknown query parameters are ignored** (spec has no `additionalProperties` rule for query; the dashboard only sends limit/after/before).
+- **Unmatched routes / wrong methods** keep the framework's empty-body 404/405. Only the spec's operations promise `{"error"}`.
+- The body is buffered into a `MemoryStream` and parsed synchronously from a span (the validator's API). This is fine at ≈5 KB batches; phase 5 measures whether pooling is worth it.
+- The 202 is `TypedResults.Json(..., statusCode: 202)`, not `TypedResults.Accepted`, so no `Location` header is implied.
+
+Open questions: none blocking.
+
+### Worth understanding
+- `src/Traced.Api/Endpoints/SpanEndpoints.cs:25-33` — the handler takes `HttpRequest` and reads the body itself instead of binding an `IngestRequest` parameter. With framework binding, malformed JSON throws inside the binder and becomes an empty 400 (or ProblemDetails) before our code runs. Reading by hand routes every bad body through the same `Result` path and the same `{"error"}` shape.
+- `src/Traced.Api/Endpoints/Errors.cs:18-24` — `UseExceptionHandler` is registered first (`Program.cs:37`), so it wraps everything after it, including the 413 that Kestrel raises *during* `CopyToAsync`. Pattern matching on `BadHttpRequestException.StatusCode` keeps client errors as 4xx while hiding real failures behind a bare 500.
+- `src/Traced.Api/Validation/TraceQueryParser.cs:66` — `request.Query["limit"]` is a `StringValues`. It holds 0, 1 or many values, and indexing `[0]` silently picks the first. Checking `Count > 1` is what makes the "repeated key → 400" decision enforceable.

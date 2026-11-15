@@ -318,7 +318,7 @@ public sealed class IngestRequestValidatorTests
     {
         var error = FailsWithSpan(s => s["end_time"] = 1713484799999999999L);
 
-        Assert.Equal("invalid request body: spans[0]: end_time must be >= start_time", error);
+        Assert.Equal("invalid request body: spans[0]: end_time must not be before start_time", error);
     }
 
     [Fact]

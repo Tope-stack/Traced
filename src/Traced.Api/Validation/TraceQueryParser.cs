@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.AspNetCore.Http;
 using Traced.Domain;
 
 namespace Traced.Api.Validation;
@@ -7,6 +8,21 @@ namespace Traced.Api.Validation;
 public static class TraceQueryParser
 {
     private const string Prefix = "invalid query parameter: ";
+
+    /// <summary>
+    /// Reads <c>limit</c>, <c>after</c> and <c>before</c> from a request's query string. A repeated key is a 400
+    /// (Tope's decision, DECISIONS.md) rather than first- or last-wins. Other keys are ignored.
+    /// </summary>
+    public static Result<TraceQuery> Parse(IQueryCollection query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        if (Single(query, "limit", out var limit) is { } limitError) { return limitError; }
+        if (Single(query, "after", out var after) is { } afterError) { return afterError; }
+        if (Single(query, "before", out var before) is { } beforeError) { return beforeError; }
+
+        return Parse(limit, after, before);
+    }
 
     public static Result<TraceQuery> Parse(string? limit, string? after, string? before)
     {
@@ -37,6 +53,23 @@ public static class TraceQueryParser
         }
 
         return Result<TraceQuery>.Success(new TraceQuery(parsedLimit, afterNs, beforeNs));
+    }
+
+    private static Result<TraceQuery>? Single(IQueryCollection query, string key, out string? value)
+    {
+        value = null;
+        if (!query.TryGetValue(key, out var values) || values.Count == 0)
+        {
+            return null;
+        }
+
+        if (values.Count > 1)
+        {
+            return Fail($"{key} must not be repeated");
+        }
+
+        value = values[0] ?? string.Empty;
+        return null;
     }
 
     private static bool TryParseBound(string? raw, out long? value)

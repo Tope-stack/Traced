@@ -102,7 +102,7 @@ public static class IngestRequestValidator
 
         if (endNs < startNs)
         {
-            return "end_time must be >= start_time";
+            return "end_time must not be before start_time";
         }
 
         SpanStatus status;

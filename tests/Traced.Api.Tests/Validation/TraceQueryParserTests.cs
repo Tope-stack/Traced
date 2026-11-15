@@ -112,4 +112,43 @@ public sealed class TraceQueryParserTests
         Assert.Equal(99L, query.AfterNs);
         Assert.Equal(100L, query.BeforeNs);
     }
+
+    private static Microsoft.AspNetCore.Http.QueryCollection Query(params (string Key, string[] Values)[] pairs) =>
+        new(pairs.ToDictionary(p => p.Key, p => new Microsoft.Extensions.Primitives.StringValues(p.Values)));
+
+    [Theory]
+    [InlineData("limit")]
+    [InlineData("after")]
+    [InlineData("before")]
+    public void Repeated_key_is_rejected_and_named(string key)
+    {
+        var result = TraceQueryParser.Parse(Query((key, ["1", "2"])));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal($"invalid query parameter: {key} must not be repeated", result.Error);
+    }
+
+    [Fact]
+    public void Query_collection_overload_applies_the_same_rules()
+    {
+        var result = TraceQueryParser.Parse(Query(("limit", ["5"]), ("after", ["99"]), ("before", ["100"]), ("other", ["x", "y"])));
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(new TraceQuery(5, 99, 100), result.Value);
+    }
+
+    [Fact]
+    public void Empty_query_collection_gives_defaults()
+    {
+        var result = TraceQueryParser.Parse(Query());
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(new TraceQuery(), result.Value);
+    }
+
+    [Fact]
+    public void Present_but_empty_value_is_rejected()
+    {
+        Assert.False(TraceQueryParser.Parse(Query(("limit", [""]))).IsSuccess);
+    }
 }

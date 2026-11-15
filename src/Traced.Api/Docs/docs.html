@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Traced API reference</title>
+</head>
+<body>
+  <!-- Renders /openapi.yaml (spec/openapi.yaml, served unchanged) with Scalar. -->
+  <script id="api-reference" data-url="/openapi.yaml"></script>
+  <script>
+    // The spec's only server is http://localhost:8080. Point "try it" requests at whichever host served this page instead.
+    document.getElementById("api-reference").dataset.configuration = JSON.stringify({
+      servers: [{ url: window.location.origin, description: "This server" }],
+      hideDownloadButton: false,
+      showDeveloperTools: "never"
+    });
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.52.4"
+          integrity="sha384-tPvZsWUisjPSa5t4cFmEhJq3K4mfQ7uXu1jPs+Nkke/8etOBqVXEdg4uOlb0RzSU"
+          crossorigin="anonymous"></script>
+</body>
+</html>

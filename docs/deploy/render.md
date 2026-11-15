@@ -1,6 +1,11 @@
 # Deploying Traced to Render's free tier
 
-Traced runs on Render as **one Docker web service**, defined in [`render.yaml`](../../render.yaml) and built from [`src/Traced.Api/Dockerfile`](../../src/Traced.Api/Dockerfile). There is no database: all traces are held in memory.
+[`render.yaml`](../../render.yaml) defines two free services:
+
+| Service | What it is | URL paths |
+|---|---|---|
+| **traced** | The API, a Docker web service built from [`src/Traced.Api/Dockerfile`](../../src/Traced.Api/Dockerfile). There is no database: all traces are held in memory. | `/` redirects to `/docs` (API reference), `/openapi.yaml`, plus the API endpoints |
+| **traced-dashboard** | The harness dashboard, a static site deployed straight from the public [benx421/traced](https://github.com/benx421/traced) repo. Nothing from it is copied into this repo. | `/` (dashboard), `/docs` (the harness's API reference) |
 
 ## What to expect from the free tier
 
@@ -13,12 +18,18 @@ Check Render's current terms; this is how it worked when this guide was written.
 ## 1. Create the service from the Blueprint
 
 1. Sign in to Render and connect your GitHub account, giving it access to the Traced repository.
-2. Go to **New → Blueprint**, choose the repository and branch `main`. Render reads `render.yaml` and shows one web service, **traced** (free, Docker, Frankfurt).
+2. Go to **New → Blueprint**, choose the repository and branch `main`. Render reads `render.yaml` and shows **traced** (free, Docker, Frankfurt) and **traced-dashboard** (free static site).
 3. Click **Apply**. The first build takes a few minutes. Render then calls `/health` until it returns 200.
 
-If the name `traced` is taken, Render gives the service a URL with a suffix; use whatever URL the dashboard shows.
+If a name is taken, Render gives the service a URL with a suffix (for example `traced-llzo.onrender.com`); use whatever URL the Render dashboard shows.
+
+**Already created the API from an earlier Blueprint?** Open the Blueprint and click **Sync** to add `traced-dashboard`. If Render won't create a service from a repo you don't own, create it by hand: **New → Static Site → Public Git Repository**, `https://github.com/benx421/traced`, build command `cp spec/openapi.yaml dashboard/openapi.yaml`, publish directory `dashboard`, and a rewrite rule from `/docs` to `/docs/index.html`.
+
+The dashboard site doesn't redeploy by itself (Render can't watch a repo you don't own). Use **Manual Deploy** on it to pick up harness changes.
 
 ## 2. Try it
+
+Open `https://<your-service>.onrender.com/` in a browser: it redirects to `/docs`, an API reference rendered from `spec/openapi.yaml`, whose "try it" requests go to the same host. From the command line:
 
 ```bash
 curl -s https://<your-service>.onrender.com/health
@@ -29,13 +40,9 @@ The `POST /spans` example in the [README](../../README.md#endpoints) works the s
 
 ### The dashboard
 
-The harness dashboard runs in your browser, so it can point at the deployed API. CORS allows any origin.
+Open the **traced-dashboard** URL, enter the API's URL (`https://<your-service>.onrender.com`, no trailing slash), and click **Connect**. The dashboard runs in your browser and calls the API directly; CORS allows any origin.
 
-```bash
-cd ../traced-harness && docker compose up -d
-```
-
-Open http://localhost:8081, enter `https://<your-service>.onrender.com`, and click **Connect**.
+You can also run the dashboard locally against the deployed API: `cd ../traced-harness && docker compose up -d`, then open http://localhost:8081.
 
 ### The emitter and verifier
 

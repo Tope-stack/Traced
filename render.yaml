@@ -1,5 +1,8 @@
 # Render Blueprint: Traced on Render's free tier (docs/deploy/render.md).
-# One web service, no database: all traces live in memory, so a restart, redeploy or free-tier sleep empties the store.
+# 1. traced: the API (Docker web service), plus its own API reference at /docs. No database: all traces live in memory,
+#    so a restart, redeploy or free-tier sleep empties the store.
+# 2. traced-dashboard: the harness dashboard, deployed straight from the public benx421/traced repo as a static site.
+#    Nothing from that repo is copied into this one.
 services:
   - type: web
     name: traced
@@ -16,3 +19,18 @@ services:
         value: "8080" # the container listens on 8080
       - key: WINDOW_MINUTES
         value: "30" # rolling window; the free tier's 512 MB fits a 60 s emitter run easily, not 30 min of sustained load
+
+  - type: web
+    name: traced-dashboard
+    runtime: static
+    repo: https://github.com/benx421/traced
+    branch: main
+    # The dashboard's own /docs page fetches /openapi.yaml, which lives outside dashboard/ in that repo.
+    buildCommand: cp spec/openapi.yaml dashboard/openapi.yaml
+    staticPublishPath: ./dashboard
+    routes:
+      - type: rewrite
+        source: /docs
+        destination: /docs/index.html
+    # Render can't watch a repo you don't own; redeploy by hand to pick up harness changes.
+    autoDeployTrigger: "off"

@@ -187,3 +187,112 @@ Because the preload stamps every trace with "now", the `after/before` (last 5 mi
 | server log error lines | 0 | 0 | — |
 
 `total` exceeds the target slightly because each client sends whole traces until it reaches its share.
+
+## 5. End to end with the real emitter (phase 6)
+
+### Setup
+
+| | |
+|---|---|
+| Harness | `benx421/traced` @ `8f7918c`, cloned at `../traced-harness`; image `traced-emitter:latest` (27.6 MB), built with `docker compose --profile tools build emitter` |
+| Docker | 29.2.1 (Docker Desktop, macOS) |
+| `.env` (harness, gitignored) | `TARGET_URL=http://host.docker.internal:8080`, `VERIFY=true`. Everything else is at emitter defaults: 20 workers, `RATE_PER_WORKER=5`, `DURATION=60s`, `WINDOW_MINUTES=30`, `OUT_OF_ORDER_PROB=0.3`, `BATCH_SIZE=10` |
+| Server | `src/Traced.Api` Release, workstation GC (`<ServerGarbageCollection>false</ServerGarbageCollection>`, runtimeconfig `"System.GC.Server": false`), on `http://0.0.0.0:8080`; fresh process per run |
+| Machine | Same as §Environment |
+
+Commands:
+
+```
+dotnet build -c Release
+env 'Logging__LogLevel__Microsoft.AspNetCore.Hosting.Diagnostics=Information' \
+  dotnet src/Traced.Api/bin/Release/net10.0/Traced.Api.dll > <label>.server.log 2>&1 &
+# sampler (every ~1 s, while the emitter runs):
+#   ps -o rss= -p <server pid>
+#   curl -s -o body -w '%{http_code}\t%{time_total}' 'http://localhost:8080/traces?limit=1000'
+cd ../traced-harness
+docker compose --profile tools run --rm emitter                  # run 1: default load
+docker compose --profile tools run --rm -e WORKERS=200 emitter   # run 2: 10x workers
+```
+
+How each number is measured:
+- **POST /spans latency** is server-side: ASP.NET hosting diagnostics `Request finished ... <n>ms` lines for `POST /spans`, i.e. middleware entry to response completion.
+- **GET /traces?limit=1000 latency** is client-side `curl` `time_total` from the host, ≈ 1 request/s, which is the dashboard's cadence.
+- Per-request logging was on for both runs, so the server was writing ~2 log lines per request to stdout.
+
+### Verifier output (verbatim)
+
+Run 1, default load:
+
+```
+2026/11/15 22:09:49 INFO starting target=http://host.docker.internal:8080 workers=20 rate_per_worker=5 duration=1m0s window_min=30 disorder=0.3 batch=10 verify=true
+2026/11/15 22:09:54 INFO progress spans=3429 traces=970
+2026/11/15 22:09:59 INFO progress spans=7542 traces=2161
+2026/11/15 22:10:04 INFO progress spans=12023 traces=3424
+2026/11/15 22:10:09 INFO progress spans=15859 traces=4505
+2026/11/15 22:10:14 INFO progress spans=19608 traces=5561
+2026/11/15 22:10:19 INFO progress spans=23927 traces=6794
+2026/11/15 22:10:24 INFO progress spans=28902 traces=8201
+2026/11/15 22:10:29 INFO progress spans=33307 traces=9464
+2026/11/15 22:10:34 INFO progress spans=37240 traces=10597
+2026/11/15 22:10:39 INFO progress spans=41899 traces=11921
+2026/11/15 22:10:44 INFO progress spans=45337 traces=12902
+2026/11/15 22:10:49 INFO progress spans=49377 traces=14039
+2026/11/15 22:10:49 INFO done spans=49377 traces=14039
+2026/11/15 22:10:49 INFO verifier starting
+2026/11/15 22:10:49 INFO verification summary expected=14039 found=14039 missing=0 span_mismatches=0
+2026/11/15 22:10:49 INFO all checks passed
+```
+
+Run 2, `WORKERS=200`:
+
+```
+2026/11/15 22:11:30 INFO starting target=http://host.docker.internal:8080 workers=200 rate_per_worker=5 duration=1m0s window_min=30 disorder=0.3 batch=10 verify=true
+2026/11/15 22:11:35 INFO progress spans=35827 traces=10235
+2026/11/15 22:11:40 INFO progress spans=78480 traces=22473
+2026/11/15 22:11:45 INFO progress spans=121432 traces=34785
+2026/11/15 22:11:50 INFO progress spans=164440 traces=47077
+2026/11/15 22:11:55 INFO progress spans=207683 traces=59422
+2026/11/15 22:12:00 INFO progress spans=250404 traces=71680
+2026/11/15 22:12:05 INFO progress spans=291798 traces=83503
+2026/11/15 22:12:10 INFO progress spans=333350 traces=95370
+2026/11/15 22:12:15 INFO progress spans=374405 traces=107135
+2026/11/15 22:12:20 INFO progress spans=416447 traces=119150
+2026/11/15 22:12:25 INFO progress spans=458612 traces=131120
+2026/11/15 22:12:30 INFO done spans=501497 traces=143353
+2026/11/15 22:12:30 INFO verifier starting
+2026/11/15 22:12:30 INFO verification summary expected=143353 found=143353 missing=0 span_mismatches=0
+2026/11/15 22:12:30 INFO all checks passed
+```
+
+The emitter exited with code 0 in both runs. Docker Compose's network and container create/remove lines are omitted above.
+
+### Numbers
+
+| Metric | Run 1: default (20 workers) | Run 2: `WORKERS=200` |
+|---|---:|---:|
+| emitter `done` spans / traces | 49,377 / 14,039 | 501,497 / 143,353 |
+| traces/s, spans/s (÷ 60 s) | 234 / 823 | 2,389 / 8,358 |
+| POST /spans requests (server log), all 202 | 4,299 | 43,815 |
+| POST /spans req/s (÷ 60 s) | 71.7 | 730 |
+| POST /spans server ms, p50 / p90 / p99 / max | 0.185 / 0.376 / 0.865 / 17.221 | 0.060 / 0.188 / 0.466 / 12.748 |
+| GET /traces?limit=1000 samples (all 200) | 53 | 53 |
+| GET /traces?limit=1000 ms, p50 / p90 / p99 / max | 2.78 / 5.46 / 8.96 / 8.96 | 9.63 / 14.05 / 17.02 / 17.02 |
+| `total` max seen by the sampler | 13,961 | 143,353 |
+| server RSS first sample | 83.3 MB | 85.3 MB |
+| server RSS peak (sampled, 1 s) | 101.2 MB | 286.1 MB |
+| server RSS at emitter exit | 103.8 MB (106,256 KB) | 287.7 MB (294,624 KB) |
+| server log `fail`/`crit` lines | 0 | 0 |
+| verifier | expected 14,039, found 14,039, missing 0, span_mismatches 0 | expected 143,353, found 143,353, missing 0, span_mismatches 0 |
+
+With 53 samples, p99 equals max.
+
+### RSS next to phase 5
+
+The workloads differ. Phase 5 POSTed 300k traces as fast as 20 clients could (2.25 s burst). Phase 6 is the real emitter over 60 s.
+
+| Run | GC | Traces in store at the end | RSS |
+|---|---|---:|---:|
+| Phase 5 HTTP, 300k burst (§4) | server | 300,027 | 1,793 MB |
+| Phase 5 HTTP, 300k burst (§4) | workstation | 300,027 | 847 MB (645 MB after 10 s idle) |
+| Phase 6 run 1, emitter default | workstation | 14,039 | 101.2 MB peak / 103.8 MB end |
+| Phase 6 run 2, emitter `WORKERS=200` | workstation | 143,353 | 286.1 MB peak / 287.7 MB end |

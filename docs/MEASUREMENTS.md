@@ -1,6 +1,19 @@
 # Measurements
 
-Raw numbers only. Interpretation is in `docs/DECISIONS.md` (Phase 5 — done).
+Raw numbers only. Interpretation is in `docs/DECISIONS.md` (Phase 5 — done, Phase 6 — done).
+
+## Index
+
+| Section | What | Phase | Build | Command |
+|---|---|---|---|---|
+| [Environment](#environment) | Machine, OS, .NET, GC, workload shape (applies to §1–§4) | 5 | — | — |
+| [1. Stress test](#1-stress-test-phase-5-plan-6) | 10 consecutive runs of the 160k-trace concurrent stress test | 5 | Debug | `dotnet test tests/Traced.Storage.Tests --no-build --filter Category=Stress` |
+| [2. Store-level benchmarks](#2-store-level-benchmarks-benchmarkdotnet) | Ingest, Query (6k/180k/300k × limit 20/1000), TryGetTrace, eviction backlog and tick | 5 | Release | `dotnet run -c Release --project benchmarks/Traced.Benchmarks -- --filter '*' --artifacts <dir>` |
+| [3. Memory](#3-memory-store-holding-n-traces) | Heap / committed / working set at 180k and 300k traces | 5 | Release | `... -- memory 300000` (+ `DOTNET_gcServer=0`) |
+| [4. HTTP](#4-http-real-server-timed-loop) | Real server, POST throughput/latency, GET /traces latency idle and loaded, RSS (server vs workstation GC) | 5 | Release | `... -- http http://localhost:18080 <traces> 20` |
+| [5. End to end](#5-end-to-end-with-the-real-emitter-phase-6) | Real emitter + verifier at default and `WORKERS=200`, RSS, /traces and POST latency (own setup table) | 6 | Release | `docker compose --profile tools run --rm [-e WORKERS=200] emitter` |
+
+The sustained 30-minute `WORKERS=200` window (~4.3M traces) was **not measured** (Tope's decision; see DECISIONS.md, "Decision — sustained 10x run skipped").
 
 ## Environment
 
@@ -10,7 +23,7 @@ Raw numbers only. Interpretation is in `docs/DECISIONS.md` (Phase 5 — done).
 | OS | macOS 15.3.1 (24D70), Darwin 24.3.0 |
 | .NET | SDK 10.0.400, runtime Microsoft.NETCore.App 10.0.11, Arm64 RyuJIT |
 | Build | Release for all benchmarks and the HTTP server; the stress test runs under `dotnet test` (Debug) |
-| GC | Server GC for the benchmark process and the API server (ASP.NET default), unless a row says workstation |
+| GC | §1–§4: server GC for the benchmark process and the API server (the ASP.NET default until phase 6), unless a row says workstation. §5: workstation GC (Traced.Api default from phase 6) |
 | BenchmarkDotNet | 0.15.8 |
 | Date | 2026-11-15 |
 

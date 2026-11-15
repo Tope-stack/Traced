@@ -95,3 +95,39 @@ Open questions:
 ## Decision — repeated query keys (Tope, 2026-11-15)
 
 Repeated query keys on `GET /traces` (e.g. `?limit=1&limit=2`) return **400** with an `{"error":"..."}` body naming the key. Don't pick the first or last value. Implement in `TraceQueryParser` (with tests) as part of phase 4.
+
+## Phase 2 — plan
+
+Files:
+- `src/Traced.Storage/TraceEntry.cs`: per-trace mutable state (Root, Spans, SpanIds, HasError, FirstSeenNs). Internal, touched only under its shard lock.
+- `src/Traced.Storage/ShardedTraceStore.cs`: `ITraceStore` per PLAN §3.1–3.4. Power-of-two shards, a plain `lock` per shard, `Dictionary` + `SortedSet` rooted index + orphan index, grouping by shard per batch, summaries built inside the lock, get-trace spans copied under the lock and sorted outside it.
+- `src/Traced.Domain/ITraceStore.cs`: drop `EvictOlderThan` for now. It returns in phase 3 with its implementation, so phase 2 ships no stub.
+- `tests/Traced.Storage.Tests`: add `Microsoft.Extensions.TimeProvider.Testing`.
+
+Tests (first): `tests/Traced.Storage.Tests/` — `TestSpans.cs` (builders), `IngestAssemblyTests.cs` (out-of-order ×3, dedupe, error propagation, root-less hidden, second root, span_count includes early children), `QueryTests.cs` (ordering, tie-break, limit, total, after/before, cross-shard merge against a brute-force model, snapshot immutability), `WindowTests.cs` (stale dropped on ingest, cutoff boundary, query/get hide aged-out traces without eviction), `GetTraceTests.cs` (asc order, copy isolation, 404 cases), `ConcurrencySmokeTests.cs`.
+
+## Phase 2 — done
+
+Built: `TraceEntry` (internal, mutable, shard-owned) and `ShardedTraceStore : ITraceStore` per PLAN §3.1–3.4.
+- Ingest: stale spans (`StartNs < cutoff`) are dropped, the rest grouped into per-shard buckets, then each touched shard lock is taken once. Dedupe is by span_id within a trace (first copy wins). `HasError` is OR'd on insert. First parentless span wins as root. The orphan index is re-keyed when an earlier child lowers `FirstSeenNs`.
+- Query: bounds are clamped to `[max(after, cutoff), before)`. Each shard contributes `view.Count` and its top `limit` summaries, built under the lock. These are merged with one sort, `(StartNs desc, TraceId desc)`, then cut to `limit`.
+- Get: clamped to the window, spans copied under the lock and sorted `(StartNs, SpanId)` ascending outside it.
+
+Tests: 55 new storage tests. The repo total is now 181 (Api 121, Storage 55, Domain 5). They were written first and confirmed red (compile failure). The storage tests ran 5× in a row green.
+
+Deviations:
+- **`EvictOlderThan` removed from `ITraceStore` for phase 2.** It returns in phase 3 with its implementation and tests. A `NotImplementedException` stub would be a public method that crashes.
+- **Merge is a sort of ≤ shards × limit candidates**, not a k-way merge. At most 32 × 1000 = 32k entries. Simpler, and its cost gets measured in phase 5 before anything cleverer is tried.
+- **Tie-break order is defined as `TraceId` descending using `Guid.CompareTo`**, which is the reverse of the `SortedSet` tuple order. `Guid.CompareTo` compares fields unsigned, so `Guid.Empty`/`Guid.AllBitsSet` are true min/max sentinels for the range keys. `Cross_shard_merge_matches_a_brute_force_model` exercises the boundary (roots exactly at `before - 1`).
+- Get-trace ties on `StartNs` are ordered by `SpanId` so output is deterministic.
+- Dedupe scope is per trace. The same span_id under two trace_ids is stored in both.
+- A stale child of a fresh root is dropped (lower `span_count`). Per PLAN §1 a child never starts before its root, so the emitter can't produce this.
+
+Open questions:
+- Orphan-index bookkeeping has no observable effect until phase 3's orphan eviction, so it is only covered indirectly here. Phase 3 tests will pin it.
+- `view.Count` is O(matches) per shard per query (PLAN §8). Not yet measured.
+
+### Worth understanding
+- `src/Traced.Storage/ShardedTraceStore.cs:49-67` — grouping a batch into per-shard buckets before locking means a 13-span batch takes ≤13 (usually ~3) lock acquisitions, each once. Locking per span would let another writer interleave within a trace's spans and multiply the lock traffic.
+- `src/Traced.Storage/ShardedTraceStore.cs:97-108` — `GetViewBetween` gives a live range over the tree. `Reverse()` walks it from the newest end, so taking `limit` is O(log n + limit). `view.Count`, however, walks the whole range (O(matches)), which is why `total` is the likely hot spot. The `TraceSummary` is built here, inside the lock, because the `TraceEntry` it reads keeps mutating after the lock is released.
+- `src/Traced.Storage/ShardedTraceStore.cs:197` and `:209` — `SortedSet` keys must never change while stored. When a trace's `FirstSeenNs` drops (an earlier child arrives) or it gains a root, the old `(FirstSeenNs, TraceId)` key is removed *using the value captured before the mutation* and re-added. Otherwise the tree would hold a key it can no longer find.

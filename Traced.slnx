@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Traced.Benchmarks/Traced.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Traced.Api/Traced.Api.csproj" />
     <Project Path="src/Traced.Domain/Traced.Domain.csproj" />

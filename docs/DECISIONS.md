@@ -223,3 +223,48 @@ Open questions: none blocking.
 - `src/Traced.Api/Endpoints/SpanEndpoints.cs:25-33` — the handler takes `HttpRequest` and reads the body itself instead of binding an `IngestRequest` parameter. With framework binding, malformed JSON throws inside the binder and becomes an empty 400 (or ProblemDetails) before our code runs. Reading by hand routes every bad body through the same `Result` path and the same `{"error"}` shape.
 - `src/Traced.Api/Endpoints/Errors.cs:18-24` — `UseExceptionHandler` is registered first (`Program.cs:37`), so it wraps everything after it, including the 413 that Kestrel raises *during* `CopyToAsync`. Pattern matching on `BadHttpRequestException.StatusCode` keeps client errors as 4xx while hiding real failures behind a bare 500.
 - `src/Traced.Api/Validation/TraceQueryParser.cs:66` — `request.Query["limit"]` is a `StringValues`. It holds 0, 1 or many values, and indexing `[0]` silently picks the first. Checking `Count > 1` is what makes the "repeated key → 400" decision enforceable.
+
+## Phase 5 — plan
+
+Files:
+- `tests/Traced.Storage.Tests/StressTests.cs` (`[Trait("Category", "Stress")]`): 32 writers × 5k traces (1–4 children, 5% error per span, like the emitter). Every trace's spans are shuffled and scattered over random writers and batches of ~10 spans. 8 readers (Query with random ranges + TryGetTrace) and a concurrent evictor run throughout. 10% of traces are "doomed" (root older than the evictor's cutoff, still inside the ingest window), so eviction does real work. Assertions: exact final total and per-trace span counts and status for kept traces, doomed traces gone, and readers never seeing a torn view (per-trace `span_count` never decreasing, never above the trace's true size, `error` only once an error span exists, kept-range total never decreasing or exceeding kept traces written, detail spans sorted, unique and consistent).
+- `benchmarks/Traced.Benchmarks/` (BenchmarkDotNet, allowed for phase 5; added to `Traced.slnx`, not a test project): `IngestBenchmarks` (emitter-shaped batches, 1 thread and 12 threads), `QueryBenchmarks` (6k/180k/300k rooted traces × limit 20/1000, unfiltered and dashboard-style ranged), `GetTraceBenchmarks`, `EvictionBenchmarks` (expired backlog, 1 shard vs 32). Plus non-BDN modes `memory` (heap and working set at 300k × ~3.5 spans) and `http` (timed loop against the real server on :18080: POST throughput/latency, then GET /traces p50/p99 idle and under ingest).
+- `docs/MEASUREMENTS.md`: raw numbers, commands, machine, .NET, Release.
+
+## Phase 5 — done
+
+Built:
+- `tests/Traced.Storage.Tests/StressTests.cs` (`[Trait("Category","Stress")]`, run alone with `--filter Category=Stress`). 32 writers × 5k traces; every span is scattered to a random writer and batch, so roots and children usually arrive in different batches on different threads. 8 readers and a concurrent evictor run throughout. It asserts the exact final total, exact per-trace span counts and status, that doomed traces are gone and nothing is left below the cutoff, and no torn reads during the run. It passed 10/10 runs in a row (10–14 s each, Debug). A mutation check (shard lock removed from `Ingest`) made it fail in 311 ms.
+- `benchmarks/Traced.Benchmarks` (BenchmarkDotNet 0.15.8; in `Traced.slnx`, not a test project, so `dotnet test` skips it): ingest, query, get, eviction backlog and steady tick; a `memory` probe; an `http` timed loop against the real server.
+- `docs/MEASUREMENTS.md`: all raw numbers and commands.
+- No production code changed.
+
+Tests: 267 (Storage 75, with 1 new stress test; Api 187; Domain 5). Full `dotnet test` passed twice. `dotnet build -warnaserror` is clean in Debug and Release, including the benchmark project.
+
+Interpretation (numbers in MEASUREMENTS.md):
+- **`/traces` at 300k is not a problem at the dashboard's cadence.** Store `Query` takes 12.0 ms (limit 20) and 20.1 ms (limit 1000, what the dashboard sends). Over HTTP, `GET /traces?limit=1000` is p50 17.8 / p99 20.5 ms, even under ~10× emitter ingest. Against a 3 s poll that is ≈ 0.6% of one core. At 6k (default 60 s run) it is 0.47 ms store / 2.7 ms HTTP. I did not optimise, per the brief: the numbers don't justify it.
+  - The O(n) `view.Count` is visible: at 300k, limit 20 spends ~12 ms, nearly all of it in `Count` (the ranged 5-min query over ~60k traces takes 0.88 ms).
+- **Ingest has large headroom.** 0.4–3 µs per emitter batch in the store, and 37–41k req/s (≈ 420–470k spans/s) over HTTP with 20 clients, against the emitter's ~33 req/s default and ~133 req/s full surge. POST p99 at 300k is 0.84 ms. The 6k run's 35 ms POST p99 is first-request JIT warm-up in a fresh process (the 1,844-request run is too short to amortise it).
+- **Eviction backlog closes the phase 3 open question.** A full 300k backlog takes 55 ms as one lock hold with 1 shard. With the real 32 shards the whole tick is 32.8 ms, so each lock hold is ≈ 1 ms. A steady tick at 300k live is 25 µs (nothing expired) to 230 µs (1,000 expired ≈ 1 s at 10×). No per-tick cap needed.
+- **The store itself is ~1.3 KB/trace** (380 MB managed heap at 300k × 3.44 spans, `HeapSizeBytes`). **Process RSS is dominated by the GC mode.** After the 300k HTTP burst the server's RSS was 1,793 MB with Server GC (the ASP.NET default) vs 847 MB with workstation GC (645 MB after 10 s idle).
+- `GetTrace` is 50–60 ns hit, ~230 ns miss.
+
+Deviations:
+- The stress test runs under `dotnet test` (Debug), as the agent rule expects; benchmarks and the HTTP server are Release.
+- The HTTP preload stamps every trace with "now", so the HTTP "last 5 min" path covers the whole set. The store-level BDN ranged case uses data spread over 25 min. Both are noted in MEASUREMENTS.md.
+- `GC.GetTotalMemory(true)` gave 718 MB (server GC) vs 462 MB (workstation) for the same store, while `HeapSizeBytes` was 380 MB in both. Both are recorded; the interpretation uses `HeapSizeBytes`.
+- The workstation-GC HTTP run is an extra diagnostic for the RSS question; no config was changed.
+
+Open questions for Tope:
+1. **GC mode for the server.** Server GC → 1.8 GB RSS after a 300k burst on a 12-core box, vs 0.85 GB with workstation GC, for similar `/traces` latency (p50 15.1 vs 17.4 ms) and ingest rate (36.9k vs 40.8k req/s). Proposed: set `<ServerGarbageCollection>false</ServerGarbageCollection>` (or `<ConcurrentGarbageCollection>` + `GCConserveMemory`) in Traced.Api, re-measure in phase 6. Not changed.
+2. **Per-shard rooted counter (PLAN §3.3).** It would remove the ~12 ms `Count` walk for unfiltered queries at 300k. Not justified at a 3 s poll. Worth it only if `total` must be served much more often or at >1M traces.
+3. **Query allocations.** limit=1000 allocates 2.7 MB per call (32 shards × 1,000 candidate summaries, then sort). A k-way merge with a shared bound would cut it to ~1,000 summaries. Low priority at 1 call / 3 s.
+
+### Worth understanding
+- `tests/Traced.Storage.Tests/StressTests.cs:79` and `:123` — final counts prove nothing was lost; these assertions catch *torn* reads mid-run. Inside the kept range `total` can only grow and never exceed what was written, and a trace's `span_count` can only grow. A summary built outside the lock, or a half-applied batch, would show up as a decrease or an overshoot, even if the end state is right.
+- `src/Traced.Storage/ShardedTraceStore.cs:103` — `SortedSet.GetViewBetween(...).Count` walks the range (O(matches)), unlike `SortedSet.Count` (O(1)). That is why limit 20 at 300k costs 12 ms unfiltered but 0.88 ms over a 5-min range (QueryBenchmarks rows). Cost follows the range width, not the page size.
+- `benchmarks/Traced.Benchmarks/MemoryProbe.cs:40` and `:53` — "memory" has several meanings: live managed objects (`HeapSizeBytes`), memory the GC has reserved and committed, and OS-resident pages (RSS). Server GC keeps per-core heaps and commits generously after an allocation burst, so RSS can be ~4–5× the live store. The memory number depends on which of these is measured.
+
+## Decision — GC mode (Tope, 2026-11-15)
+
+Switch `Traced.Api` to workstation GC (`<ServerGarbageCollection>false</ServerGarbageCollection>`) in phase 6, then re-measure RSS and `/traces` latency at default load and `WORKERS=200`, recording both in `docs/MEASUREMENTS.md`. Reason: phase 5 measured 1,793 MB RSS with server GC vs 847 MB with workstation GC after the 300k-trace HTTP run, with similar latency and throughput. The per-shard counter and query-allocation items stay deferred; the numbers don't justify them.

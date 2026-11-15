@@ -55,6 +55,7 @@ Details worth knowing:
 - **`GET /traces/{id}`** returns every span received for the trace, ordered by `start_time`. Root spans omit `parent_span_id`.
 - **Every error** is a JSON body of the form `{"error":"<message>"}`, including malformed JSON and unexpected server errors.
 - **CORS** allows any origin for `GET` and `POST` with a `Content-Type` header, so a browser dashboard on another port or host can call it.
+- **For people browsing the server:** `GET /docs` is an interactive API reference rendered from the spec, `GET /openapi.yaml` serves the spec itself, and `GET /` redirects to `/docs`. These are additions outside the contract.
 
 A minimal exchange:
 
@@ -186,13 +187,13 @@ Internal defaults are 32 shards and a 1-second eviction interval. The API uses w
 
 ## 8. Testing
 
-**267 automated tests** run with `dotnet test`:
+**270 automated tests** run with `dotnet test`:
 
 | Project | Tests | Covers |
 |---|---|---|
 | Traced.Domain.Tests | 5 | Time and window helpers |
 | Traced.Storage.Tests | 75 | Out-of-order assembly, dedupe, error status, root-less traces, ordering and tie-breaks, limit and total, window bounds, eviction (including the exact cutoff nanosecond), the eviction job, concurrency, and the stress test |
-| Traced.Api.Tests | 187 | Every validation rule, response shapes, and in-process HTTP tests asserting exact status codes and JSON bodies from the OpenAPI examples, CORS preflight and error handling |
+| Traced.Api.Tests | 190 | Every validation rule, response shapes, and in-process HTTP tests asserting exact status codes and JSON bodies from the OpenAPI examples, CORS preflight, error handling, and the docs routes |
 
 The tests were written before the code in each phase.
 
@@ -248,7 +249,7 @@ docker build -f src/Traced.Api/Dockerfile -t traced-api .
 docker run --rm -p 8080:8080 traced-api
 ```
 
-**On Render:** [`render.yaml`](../render.yaml) is a Blueprint for one free Docker web service. Render deploys `main` after the CI checks pass. On the free tier the service sleeps after 15 minutes idle and comes back empty. See [`deploy/render.md`](deploy/render.md).
+**On Render:** [`render.yaml`](../render.yaml) is a Blueprint for two free services: the API as a Docker web service, and the harness dashboard as a static site built straight from `benx421/traced`. Render deploys the API from `main` after the CI checks pass. On the free tier the service sleeps after 15 minutes idle and comes back empty. See [`deploy/render.md`](deploy/render.md).
 
 ## 11. Limits and known risks
 

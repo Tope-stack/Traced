@@ -6,6 +6,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Served by Endpoints/DocsEndpoints.cs. The contract is embedded from spec/ unchanged. -->
+    <EmbeddedResource Include="..\..\spec\openapi.yaml" LogicalName="openapi.yaml" />
+    <EmbeddedResource Include="Docs\docs.html" LogicalName="docs.html" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Traced.Storage\Traced.Storage.csproj" />
   </ItemGroup>
 

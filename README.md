@@ -41,6 +41,8 @@ dotnet run -c Release --project src/Traced.Api
 | `GET /traces/{trace_id}` | `200 {"trace_id":"...","spans":[...]}`, spans by `start_time` ascending | `400` for an invalid UUID; `404` if the trace is unknown, has no root, or is outside the window |
 | `GET /health` | `200 {"status":"ok"}` | |
 
+Outside the contract, for people rather than clients: `GET /docs` is an API reference page rendered from the spec, `GET /openapi.yaml` serves the spec unchanged, and `GET /` redirects to `/docs`.
+
 The examples below use timestamps from the current time. A span older than the window would be accepted and then dropped.
 
 ```bash
@@ -108,7 +110,7 @@ docker build -f src/Traced.Api/Dockerfile -t traced-api .
 docker run --rm -p 8080:8080 traced-api
 ```
 
-[`render.yaml`](render.yaml) deploys the same image to Render's free tier as a single web service; see [`docs/deploy/render.md`](docs/deploy/render.md). [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds, runs every test, and smoke-tests the image on each pull request and push to `main`, and Render deploys `main` only after those checks pass.
+[`render.yaml`](render.yaml) deploys the same image to Render's free tier, plus the harness dashboard as a static site built from `benx421/traced`; see [`docs/deploy/render.md`](docs/deploy/render.md). [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds, runs every test, and smoke-tests the image on each pull request and push to `main`, and Render deploys `main` only after those checks pass.
 
 ## Repository layout
 

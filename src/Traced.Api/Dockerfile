@@ -7,6 +7,8 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY Directory.Build.props .editorconfig ./
 COPY src/ src/
+# Embedded into the Api for /openapi.yaml and /docs.
+COPY spec/ spec/
 RUN dotnet publish src/Traced.Api -c Release -o /app
 
 # 2. Runtime: non-root, port 8080. Program.cs binds 0.0.0.0:8080 unless ASPNETCORE_URLS is set.

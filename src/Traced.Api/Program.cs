@@ -37,6 +37,7 @@ var app = builder.Build();
 app.UseJsonErrors();
 app.UseCors();
 
+app.MapDocsEndpoints();
 app.MapHealthEndpoints();
 app.MapSpanEndpoints();
 app.MapTraceEndpoints();

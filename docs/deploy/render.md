@@ -5,7 +5,7 @@
 | Service | What it is | URL paths |
 |---|---|---|
 | **traced** | The API, a Docker web service built from [`src/Traced.Api/Dockerfile`](../../src/Traced.Api/Dockerfile). There is no database: all traces are held in memory. | `/` redirects to `/docs` (API reference), `/openapi.yaml`, plus the API endpoints |
-| **traced-dashboard** | The harness dashboard, a static site deployed straight from the public [benx421/traced](https://github.com/benx421/traced) repo. Nothing from it is copied into this repo. | `/` (dashboard), `/docs` (the harness's API reference) |
+| **traced-dashboard** | The harness dashboard, a static site deployed from [Tope-stack/traced-harness](https://github.com/Tope-stack/traced-harness), an unmodified GitHub fork of [benx421/traced](https://github.com/benx421/traced). Nothing from it is copied into this repo. | `/` (dashboard), `/docs` (the harness's API reference) |
 
 ## What to expect from the free tier
 
@@ -15,17 +15,23 @@ Check Render's current terms; this is how it worked when this guide was written.
 - **512 MB of memory.** A default 60-second emitter run (~14k traces) used 58 MiB in the container locally. A 30-minute window under sustained default load would hold ~420k traces at ~1.3 KB each, which is more than the free instance has. Use the free tier for demos and short emitter runs; for sustained load, pick a larger plan or lower `WINDOW_MINUTES`.
 - **One instance.** The store is in-process, so the service must not be scaled to more than one instance: each would hold a different subset of the traces.
 
-## 1. Create the service from the Blueprint
+## 1. Create the services from the Blueprint
 
-1. Sign in to Render and connect your GitHub account, giving it access to the Traced repository.
+Render only builds from repos your GitHub account can grant it access to, so the dashboard is deployed from a fork:
+
+0. On GitHub, open [benx421/traced](https://github.com/benx421/traced), click **Fork**, set **Repository name** to `traced-harness` (the name `traced` is already this repo), and create the fork. Don't change anything in it.
+
+Then:
+
+1. Sign in to Render and connect your GitHub account, giving it access to the **Traced** and **traced-harness** repositories.
 2. Go to **New → Blueprint**, choose the repository and branch `main`. Render reads `render.yaml` and shows **traced** (free, Docker, Frankfurt) and **traced-dashboard** (free static site).
 3. Click **Apply**. The first build takes a few minutes. Render then calls `/health` until it returns 200.
 
 If a name is taken, Render gives the service a URL with a suffix (for example `traced-llzo.onrender.com`); use whatever URL the Render dashboard shows.
 
-**Already created the API from an earlier Blueprint?** Open the Blueprint and click **Sync** to add `traced-dashboard`. If Render won't create a service from a repo you don't own, create it by hand: **New → Static Site → Public Git Repository**, `https://github.com/benx421/traced`, build command `cp spec/openapi.yaml dashboard/openapi.yaml`, publish directory `dashboard`, and a rewrite rule from `/docs` to `/docs/index.html`.
+**Already created the API from an earlier Blueprint?** After forking, give Render access to `traced-harness` (Render → Account Settings → GitHub → Configure), then open the Blueprint and click **Sync** to add `traced-dashboard`. If you'd rather create it by hand: **New → Static Site**, pick `traced-harness`, branch `main`, build command `cp spec/openapi.yaml dashboard/openapi.yaml`, publish directory `dashboard`, and under **Redirects/Rewrites** a rewrite from `/docs` to `/docs/index.html`.
 
-The dashboard site doesn't redeploy by itself (Render can't watch a repo you don't own). Use **Manual Deploy** on it to pick up harness changes.
+**Harness updates:** the fork doesn't follow benx421/traced by itself. On the fork's GitHub page, click **Sync fork** to pull in upstream changes; the dashboard site then redeploys automatically.
 
 ## 2. Try it
 

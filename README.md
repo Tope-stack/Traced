@@ -110,7 +110,7 @@ docker build -f src/Traced.Api/Dockerfile -t traced-api .
 docker run --rm -p 8080:8080 traced-api
 ```
 
-[`render.yaml`](render.yaml) deploys the same image to Render's free tier, plus the harness dashboard as a static site built from `benx421/traced`; see [`docs/deploy/render.md`](docs/deploy/render.md). [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds, runs every test, and smoke-tests the image on each pull request and push to `main`, and Render deploys `main` only after those checks pass.
+[`render.yaml`](render.yaml) deploys the same image to Render's free tier, plus the harness dashboard as a static site built from `Tope-stack/traced-harness`, an unmodified fork of `benx421/traced`; see [`docs/deploy/render.md`](docs/deploy/render.md). [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds, runs every test, and smoke-tests the image on each pull request and push to `main`, and Render deploys `main` only after those checks pass.
 
 ## Repository layout
 

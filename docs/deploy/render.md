@@ -29,7 +29,7 @@ Then:
 
 If a name is taken, Render gives the service a URL with a suffix (for example `traced-llzo.onrender.com`); use whatever URL the Render dashboard shows.
 
-**Already created the API from an earlier Blueprint?** After forking, give Render access to `traced-harness` (Render → Account Settings → GitHub → Configure), then open the Blueprint and click **Sync** to add `traced-dashboard`. If you'd rather create it by hand: **New → Static Site**, pick `traced-harness`, branch `main`, build command `cp spec/openapi.yaml dashboard/openapi.yaml`, publish directory `dashboard`, and under **Redirects/Rewrites** a rewrite from `/docs` to `/docs/index.html`.
+**Already created the API from an earlier Blueprint?** After forking, give Render access to `traced-harness` (Render → Account Settings → GitHub → Configure), then open the Blueprint and click **Sync** to add `traced-dashboard`. If you'd rather create it by hand: **New → Static Site**, pick `traced-harness`, branch `master`, build command `cp spec/openapi.yaml dashboard/openapi.yaml`, publish directory `dashboard`, and under **Redirects/Rewrites** a rewrite from `/docs` to `/docs/index.html`.
 
 **Harness updates:** the fork doesn't follow benx421/traced by itself. On the fork's GitHub page, click **Sync fork** to pull in upstream changes; the dashboard site then redeploys automatically.
 

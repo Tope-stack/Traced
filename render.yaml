@@ -25,7 +25,7 @@ services:
     name: traced-dashboard
     runtime: static
     repo: https://github.com/Tope-stack/traced-harness
-    branch: main
+    branch: master # the harness and its fork use master, not main
     # The dashboard's own /docs page fetches /openapi.yaml, which lives outside dashboard/ in that repo.
     buildCommand: cp spec/openapi.yaml dashboard/openapi.yaml
     staticPublishPath: ./dashboard
@@ -33,5 +33,5 @@ services:
       - type: rewrite
         source: /docs
         destination: /docs/index.html
-    # Redeploys when the fork's main changes, e.g. after "Sync fork" on GitHub pulls in harness updates.
+    # Redeploys when the fork's master changes, e.g. after "Sync fork" on GitHub pulls in harness updates.
     autoDeployTrigger: commit

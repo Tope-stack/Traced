@@ -249,7 +249,7 @@ docker build -f src/Traced.Api/Dockerfile -t traced-api .
 docker run --rm -p 8080:8080 traced-api
 ```
 
-**On Render:** [`render.yaml`](../render.yaml) is a Blueprint for two free services: the API as a Docker web service, and the harness dashboard as a static site built straight from `benx421/traced`. Render deploys the API from `main` after the CI checks pass. On the free tier the service sleeps after 15 minutes idle and comes back empty. See [`deploy/render.md`](deploy/render.md).
+**On Render:** [`render.yaml`](../render.yaml) is a Blueprint for two free services: the API as a Docker web service, and the harness dashboard as a static site built from `Tope-stack/traced-harness`, an unmodified fork of `benx421/traced`. Render deploys the API from `main` after the CI checks pass. On the free tier the service sleeps after 15 minutes idle and comes back empty. See [`deploy/render.md`](deploy/render.md).
 
 ## 11. Limits and known risks
 
